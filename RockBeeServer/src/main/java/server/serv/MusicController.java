@@ -80,18 +80,30 @@ public class MusicController extends HttpServlet {
     @RequestMapping(value = "/checkingsong", method = RequestMethod.POST)
     public Boolean checkingSongInTheRoom(@RequestBody ArrayList<Object> params){
         String UUID = (String)params.get(0);
-        Audio audio = new Audio();
-        audio.setLen((Integer) params.get(1));
-        audio.setName((String) params.get(2));
+        int len = (Integer) params.get(1);
+        String name = (String) params.get(2);
         for (Room r: Room.rooms){
             if (r.getCreator().getUUID().equals(UUID)) {
-                for(Audio a: r.getSongs()){
-                    if(a.getLen() == audio.getLen() && a.getName().equals(audio.getName())) return true;
+                for(File f: r.getMySongs()){
+                    if(f.length() == len && name.equals(f.getName())) return true;
                 }
                 return false;
             }
         }
         return null;
+    }
+
+    @RequestMapping(value = "/checkingroom", method = RequestMethod.POST)
+    public Boolean checkingRoom(@RequestBody ArrayList<Object> params){
+        String UUID = (String) params.get(0);
+        for(Room r: Room.rooms){
+            if(r.getCreator().getUUID().equals(UUID)){
+                System.out.println("true " + UUID + "\n"+ r);
+                return true;
+            }
+        }
+        System.out.println("false " + UUID);
+        return false;
     }
 
     public String substring(String s){

@@ -68,8 +68,8 @@ class WebSocketHandler extends TextWebSocketHandler {
                     try {
                         users.setData("start");
                         session.sendMessage(new TextMessage(gson.toJson(users)));
-                        for(Audio audio: r.getPlaylist()) {
-                            users.setData(audio.getName());
+                        for(String audio: r.getPlaylist()) {
+                            users.setData(audio);
                             session.sendMessage(new TextMessage(gson.toJson(users)));
                         }
                         users.setData("end");
@@ -135,6 +135,8 @@ class WebSocketHandler extends TextWebSocketHandler {
                     }
                 }
                 System.out.println(r + "\nStatus: Room closed\n============================");
+                r.deleteCatalog();
+                System.out.println(Room.rooms.toString());
                 r = null;
                 break;
             case "pass":
@@ -155,22 +157,6 @@ class WebSocketHandler extends TextWebSocketHandler {
                 break;
             case "connectservice":
                 r.addService(session, msg.getData());
-                for(Audio a: r.getPlaylist()){
-                    MessageToWebSocket message1 = new MessageToWebSocket();
-                    message1.setCommand("check");
-                    AudioData toSend = new AudioData();
-                    toSend.setBy("");
-                    toSend.setAudio("");
-                    toSend.setPart("");
-                    toSend.setLenAudio(String.valueOf(a.getLen()));
-                    toSend.setName(a.getName());
-                    message1.setData(gson.toJson(toSend));
-                    try {
-                        session.sendMessage(new TextMessage(gson.toJson(message1)));
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    }
-                }
                 break;
             case "disconnectservice":
                 r.deleteService(session);
@@ -190,8 +176,8 @@ class WebSocketHandler extends TextWebSocketHandler {
                 try {
                     users.setData("start");
                     session.sendMessage(new TextMessage(gson.toJson(users)));
-                    for(Audio audio: r.getPlaylist()) {
-                        users.setData(audio.getName());
+                    for(String audio: r.getPlaylist()) {
+                        users.setData(audio);
                         session.sendMessage(new TextMessage(gson.toJson(users)));
                     }
                     users.setData("end");
@@ -213,76 +199,34 @@ class WebSocketHandler extends TextWebSocketHandler {
                 } catch (IOException e) {
                     e.printStackTrace();
                 }
-                break;
             case "creatorsession":
                 r.addSession(session);
                 break;
             case "ondestroy":
                 r.deleteSession(session);
                 break;
-            case "audio":
+            case "audio":// Закачиваю песню на сервер
                 AudioData data2 = gson.fromJson(msg.getData(), AudioData.class);
-                String UUIDuser = data2.getBy();
-                if(data2.getPart().equals("0")){
-                    System.out.println(r + "\nStatus: Started downloading song\n============================");
-                    MessageToWebSocket message1 = new MessageToWebSocket();
-                    message1.setCommand("createnewfile");
-                    message1.setData(data2.getName());
-                    for(WebSocketSession s: r.getUsersService().keySet()){
-                        if(!r.getUsersService().get(s).equals(UUIDuser)){
-                            try{
-                                s.sendMessage(new TextMessage(gson.toJson(message1)));
-                            } catch (IllegalStateException | ConcurrentModificationException e){
-                                //r.getUsersService().remove(s);
-                            } catch (IOException e) {
-                                e.printStackTrace();
-                            }
-                        }
-                    }
-                }
+                if(data2.getPart().equals("0"))System.out.println(r + "\nStatus: Starting download:" + data2.getName() + "\n============================");
                 r.addSong(data2);
                 break;
             case "checked":
                 AudioData data3 = gson.fromJson(msg.getData(), AudioData.class);
                 boolean bool = Boolean.parseBoolean(data3.getAudio());
                 System.out.println(bool);
-                if(!bool){
-                    Audio a = new Audio();
-                    a.setName(data3.getName());
-                    a.setLen(Integer.parseInt(data3.getLenAudio()));
-                    r.sendAudio(session, a);
+                if(!bool){//Отправка песни клиенту
+                    r.sendAudio(session, data3.getName());
                 }
                 break;
             case "startplaying":
-                AudioData data5 = gson.fromJson(msg.getData(), AudioData.class);
-                Audio a = new Audio();
-                a.setName(data5.getName());
-                a.setLen(Integer.parseInt(data5.getLenAudio()));
-                r.startPlaying(a, Long.parseLong(data5.getPart()));
+                r.startPlaying(msg.getData());
                 break;
-            case "addtotheplaylist":
+            case "newplaylist"://Обновление плейлиста
                 AudioData data4 = gson.fromJson(msg.getData(), AudioData.class);
-                Audio a1 = new Audio();
-                a1.setName(data4.getName());
-                a1.setLen(Integer.parseInt(data4.getLenAudio()));
-                r.getPlaylist().add(a1);
-                MessageToWebSocket message1 = new MessageToWebSocket();
-                message1.setCommand("songended");
-                for(WebSocketSession s: r.getUsers()){
-                    try {
-                        message1.setData("start");
-                        s.sendMessage(new TextMessage(gson.toJson(message1)));
-                        for(Audio audio: r.getPlaylist()) {
-                            message1.setData(audio.getName());
-                            s.sendMessage(new TextMessage(gson.toJson(message1)));
-                        }
-                        message1.setData("end");
-                        s.sendMessage(new TextMessage(gson.toJson(message1)));
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    } catch (IllegalStateException  | ConcurrentModificationException e){
-                        //r.getUsers().remove(s);
-                    }
+                switch(data4.getAudio()){
+                    case "add":
+                        r.addToThePlaylist(data4.getName());
+                        break;
                 }
                 break;
             case "songended":
@@ -304,26 +248,23 @@ class WebSocketHandler extends TextWebSocketHandler {
                 }
                 break;
             case "catchtime":
-                System.out.println("gottime");
                 while(!r.getCheckingfortime().isEmpty()){
                     MessageToWebSocket message2 = new MessageToWebSocket();
                     message2.setCommand("catchtime");
                     message2.setData(msg.getData());
                     try {
-                        System.out.println("sendtime");
                         r.getCheckingfortime().get(0).sendMessage(new TextMessage(gson.toJson(message2)));
                         r.getCheckingfortime().remove(0);
                     } catch (IOException e) {
                         e.printStackTrace();
                     }
-
                 }
                 break;
-            case "addfromuser":
+            case "addfromnotcreator":
                 for(WebSocketSession s: r.getUsersService().keySet()){
                     if(r.getUsersService().get(s).equals(r.getCreator().getUUID())){
                         MessageToWebSocket message2 = new MessageToWebSocket();
-                        message2.setCommand("addfromuser");
+                        message2.setCommand("addfromnotcreator");
                         message2.setData(msg.getData());
                         try {
                             s.sendMessage(new TextMessage(gson.toJson(message2)));
@@ -332,6 +273,8 @@ class WebSocketHandler extends TextWebSocketHandler {
                         }
                     }
                 }
+                break;
+
         }
     }
     public Room findRoom(String UUID){

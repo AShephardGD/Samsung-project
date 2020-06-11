@@ -6,30 +6,39 @@ import com.google.gson.Gson;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.ConcurrentModificationException;
 import java.util.HashMap;
+import java.util.Objects;
 
 public class Room {
     public static ArrayList<Room> rooms = new ArrayList<>();
     private String password;
     private User creator;
     private ArrayList<User> connectedUser = new ArrayList<>();
-    private long startedTime;
     private int userPassed = 0;
     private ArrayList<WebSocketSession> users = new ArrayList<>(), checkingfortime = new ArrayList<>();
     private HashMap<WebSocketSession, String> usersService = new HashMap<>();
     private ArrayList<Audio> songs = new ArrayList<>();
     private Gson gson = new Gson();
-    private Audio nowPlaying;
-    private ArrayList<Audio> playlist = new ArrayList<>();
+    private String nowPlaying = null;
+    private ArrayList<File> mySongs = new ArrayList<>();
+    private HashMap<WebSocketSession, Boolean> canDownload = new HashMap<>();
+    private HashMap<WebSocketSession, ArrayList<File>> listToDownload = new HashMap<>();
+    private File catalog;
+    private ArrayList<String> playlist = new ArrayList<>();
 
     public Room(User user, String pass) {
         creator = user;
         password = pass;
-        rooms.add(this);
         connectedUser.add(user);
+        catalog = new File("C:\\Users\\AdrianShephard\\Desktop\\RockBeeServer\\" + user.getUUID());
+        catalog.mkdir();
     }
     public void disconnect(User user, WebSocketSession session){
         connectedUser.remove(user);
@@ -44,24 +53,25 @@ public class Room {
     public void songEnded(){
         System.out.println(this + "\nStatus: Song ended\n============================");
         nowPlaying = null;
+        playlist = new ArrayList<>();
         userPassed = 0;
-        playlist.remove(0);
-        MessageToWebSocket message1 = new MessageToWebSocket();
-        message1.setCommand("songended");
-        for(WebSocketSession s: users){
-            try {
-                message1.setData("start");
-                s.sendMessage(new TextMessage(gson.toJson(message1)));
-                for(Audio audio: playlist) {
-                    message1.setData(audio.getName());
-                    s.sendMessage(new TextMessage(gson.toJson(message1)));
-                }
-                message1.setData("end");
-                s.sendMessage(new TextMessage(gson.toJson(message1)));
+        MessageToWebSocket message = new MessageToWebSocket();
+        message.setCommand("allmusicended");
+        message.setData("");
+        for(WebSocketSession session: usersService.keySet()){
+            if(!usersService.get(session).equals(creator.getUUID())){
+                try{
+                    session.sendMessage(new TextMessage(gson.toJson(message)));
+                } catch (IOException e) {
+                    e.printStackTrace();
+                } catch (IllegalStateException e){}
+            }
+        }
+        for(WebSocketSession session: users){
+            try{
+                session.sendMessage(new TextMessage(gson.toJson(message)));
             } catch (IOException e) {
                 e.printStackTrace();
-            } catch (IllegalStateException  | ConcurrentModificationException e){
-                users.remove(s);
             }
         }
     }
@@ -77,8 +87,8 @@ public class Room {
         if(nowPlaying != null) {
             userPassed++;
             if (((double) userPassed / connectedUser.size()) >= 0.5) {
-                songEnded();
                 for (WebSocketSession s : usersService.keySet()) {
+                        if(usersService.get(s).equals(creator.getUUID())) {
                         try {
                             MessageToWebSocket message = new MessageToWebSocket();
                             message.setCommand("songendedfromusers");
@@ -90,6 +100,7 @@ public class Room {
                             //users.remove(creatorSession);
                         }
                         break;
+                    }
 
                 }
 
@@ -112,13 +123,19 @@ public class Room {
     }
     public void addSession(WebSocketSession s){users.add(s);}
     public int getPassed(){return userPassed;}
-    public void deleteSession(WebSocketSession s){users.remove(s);}
+    public void deleteSession(WebSocketSession s){
+        users.remove(s);
+    }
     public void addService(WebSocketSession s, String UUID){
         usersService.put(s, UUID);
+        canDownload.put(s, true);
+        listToDownload.put(s, new ArrayList<>());
         System.out.println(this + "\nStatus: Service connected\n============================");
     }
     public void deleteService(WebSocketSession s){
         usersService.remove(s);
+        canDownload.remove(s);
+        listToDownload.remove(s);
         System.out.println(this + "\nStatus: Service disconnected\n============================");
     }
     public void addSong(AudioData data){
@@ -137,19 +154,28 @@ public class Room {
             songs.add(audio);
         }
         if (part + 1 == len){
+            StringBuilder input = new StringBuilder();
+            for (String s: audio.getAudioData()) input.append(s);
+            songs.remove(audio);
+            byte[] bytes = input.toString().getBytes(StandardCharsets.ISO_8859_1);
+            File song = new File(catalog.getAbsolutePath() + "\\" + audio.getName());
+            try {
+                FileOutputStream fos = new FileOutputStream(song, false);
+                fos.write(bytes);
+                fos.close();
+            } catch (IOException e) {
+                return;
+            }
+            mySongs.add(song);
             System.out.println(this + "\nStatus: Got audio\n============================");
+            AudioData data1 = new AudioData();
+            data1.setName(song.getName());
+            data1.setLenAudio(String.valueOf(song.length()));
+            MessageToWebSocket message = new MessageToWebSocket();
+            message.setCommand("check");
+            message.setData(gson.toJson(data1));
             for(WebSocketSession s: usersService.keySet()){
-                if(!usersService.get(s).equals(data.getBy()))
-                {
-                    MessageToWebSocket message = new MessageToWebSocket();
-                    message.setCommand("check");
-                    AudioData toSend = new AudioData();
-                    toSend.setBy("");
-                    toSend.setAudio("");
-                    toSend.setPart("");
-                    toSend.setLenAudio(data.getLenAudio());
-                    toSend.setName(data.getName());
-                    message.setData(gson.toJson(toSend));
+                if(!usersService.get(s).equals(data.getBy())){
                     try {
                         s.sendMessage(new TextMessage(gson.toJson(message)));
                     } catch (IOException e) {
@@ -161,86 +187,112 @@ public class Room {
     }
     class SendAudio extends Thread{
         WebSocketSession s;
-        Audio audio;
-        public SendAudio(WebSocketSession s, Audio a) {
-            this.s = s;
-            audio = a;
+        File song;
+        public SendAudio(WebSocketSession session, File f) {
+            this.s = session;
+            song = f;
         }
 
         @Override
         public void run() {
+            System.out.println("Start sending");
+            canDownload.put(s, false);
+            ArrayList<File> temp = listToDownload.get(s);
+            temp.remove(song);
+            listToDownload.put(s, temp);
             MessageToWebSocket message = new MessageToWebSocket();
             message.setCommand("audio");
-            for(Audio a: songs){
-                if(a.getName().equals(audio.getName()) && a.getLen() == audio.getLen()){
-                    audio = a;
-                    break;
-                }
+            byte[] bytes;
+            try {
+                bytes = Files.readAllBytes(song.toPath());
+            } catch (IOException e) {
+                return;
             }
-            AudioData audioData = new AudioData();
-            audioData.setLenAudio(Integer.toString(audio.getLen()));
-            audioData.setName(audio.getName());
-            audioData.setBy(audio.getBy());
-            for(String data: audio.getAudioData()){
-                audioData.setPart(Integer.toString(audio.getAudioData().indexOf(data)));
-                audioData.setAudio(data);
-                message.setData(gson.toJson(audioData));
+            String toSend = new String(bytes, StandardCharsets.ISO_8859_1);
+            int len = toSend.length()/256;
+            if(toSend.length() % 256 != 0) len++;
+            AudioData data = new AudioData();
+            data.setName(song.getName());
+            data.setLenAudio(Integer.toString(len));
+            for (int i = 0; i < len; i++) {
+                if (((i + 1) * 256) < toSend.length())
+                    data.setAudio(toSend.substring(i * 256, (i + 1) * 256));
+                else data.setAudio(toSend.substring(i * 256));
+                data.setPart(Integer.toString(i));
+                message.setData(new Gson().toJson(data));
                 try {
                     s.sendMessage(new TextMessage(gson.toJson(message)));
-                    System.out.println("send audio: " + audio.getAudioData().indexOf(data) + "/" + audio.getLen());
                 } catch (IOException e) {
                     e.printStackTrace();
                 }
             }
+            System.out.println("send audio complete");
+            temp = listToDownload.get(s);
+            if(!temp.isEmpty()) new SendAudio(s, temp.get(0)).start();
+            else canDownload.put(s, true);
         }
     }
-    public void sendAudio(WebSocketSession s, Audio a){
-        new SendAudio(s, a).start();
+    public void sendAudio(WebSocketSession session, String s){
+        File song = null;
+        for (File f: mySongs){
+            if(f.getName().equals(s))song = f;
+        }
+        if(song == null) return;
+        ArrayList<File> temp = listToDownload.get(session);
+        temp.add(song);
+        listToDownload.put(session, temp);
+        if(canDownload.get(session)){
+            new SendAudio(session, song).start();
+        }
     }
 
-    public ArrayList<Audio> getSongs() {
-        return songs;
-    }
 
     public HashMap<WebSocketSession, String> getUsersService() {
         return usersService;
     }
-    public void startPlaying(Audio a, Long l){
-        System.out.println(this + "\nStatus: Now playing: " + a.getName() + "\n============================");
-        nowPlaying = a;
-        startedTime = l;
+    public void startPlaying(String s){
+        System.out.println(this + "\nStatus: Now playing: " + s + "\n============================");
+        String wasPlaying = nowPlaying;
+        playlist.remove(wasPlaying);
+        nowPlaying = s;
         userPassed = 0;
         MessageToWebSocket message = new MessageToWebSocket();
         message.setCommand("startedplaying");
-        AudioData data = new AudioData();
-        data.setName(a.getName());
-        data.setLenAudio(Integer.toString(a.getLen()));
-        data.setPart(Long.toString(l));
-        message.setData(gson.toJson(data));
-        for(WebSocketSession s: usersService.keySet()){
-            if(!usersService.get(s).equals(creator.getUUID())){
-                try {
-                    s.sendMessage(new TextMessage(gson.toJson(message)));
-                } catch (IOException e) {
-                    e.printStackTrace();
-                } catch (IllegalStateException | ConcurrentModificationException e){
-                    usersService.remove(s);
-                }
-            }
-        }
-        message.setData(a.getName());
-        for(WebSocketSession s: users){
+        message.setData(s);
+        for(WebSocketSession session: users){
             try {
-                s.sendMessage(new TextMessage(gson.toJson(message)));
+                session.sendMessage(new TextMessage(gson.toJson(message)));
             } catch (IOException e) {
                 e.printStackTrace();
             } catch (IllegalStateException | ConcurrentModificationException e){
-                usersService.remove(s);
+                //usersService.remove(session);
+            }
+        }
+        for(WebSocketSession session: usersService.keySet()){
+            if(!usersService.get(session).equals(creator.getUUID())){
+                try {
+                    session.sendMessage(new TextMessage(gson.toJson(message)));
+                } catch (IOException e) {
+                    e.printStackTrace();
+                } catch (IllegalStateException | ConcurrentModificationException e){
+                    //usersService.remove(session);
+                }
+            }
+        }
+        message.setCommand("deletefromtheplaylist");
+        message.setData(wasPlaying);
+        for(WebSocketSession session: users){
+            try {
+                session.sendMessage(new TextMessage(gson.toJson(message)));
+            } catch (IOException e) {
+                e.printStackTrace();
+            } catch (IllegalStateException | ConcurrentModificationException e){
+                //usersService.remove(s);
             }
         }
     }
 
-    public ArrayList<Audio> getPlaylist() {
+    public ArrayList<String> getPlaylist() {
         return playlist;
     }
     public void addCheckingTime(WebSocketSession s){
@@ -249,5 +301,27 @@ public class Room {
 
     public ArrayList<WebSocketSession> getCheckingfortime() {
         return checkingfortime;
+    }
+    public void deleteCatalog(){
+        for(File f: Objects.requireNonNull(catalog.listFiles()))f.delete();
+        catalog.delete();
+    }
+    public void addToThePlaylist(String s){
+        System.out.println(this + "\nStatus: Song added to the playlist: " + s + "\n============================");
+        MessageToWebSocket message = new MessageToWebSocket();
+        message.setCommand("addtotheplaylist");
+        message.setData(s);
+        playlist.add(s);
+        for(WebSocketSession session: users){
+            try{
+                session.sendMessage(new TextMessage(gson.toJson(message)));
+            } catch (IOException | IllegalStateException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+    public ArrayList<File> getMySongs() {
+        return mySongs;
     }
 }
